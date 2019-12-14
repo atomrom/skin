@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright Â© 2019 Attila Ulbert
+# Copyright © 2019 Attila Ulbert
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation 
 # files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, 
@@ -21,7 +21,7 @@ from keras.applications.resnet50 import ResNet50
 from keras.applications.inception_v3 import InceptionV3
 from keras.applications.xception import Xception
 from keras.applications.inception_resnet_v2 import InceptionResNetV2
-from keras.applications.densenet import DenseNet121, DenseNet169, DenseNet201
+from keras.applications.densenet import DenseNet121, DenseNet169, DenseNet201, preprocess_input
 from keras.applications.mobilenet import MobileNet
 from keras.applications.nasnet import NASNetLarge, NASNetMobile
 ## ---------------------------------------------------------------
@@ -67,19 +67,30 @@ _SPLIT_TEST = 'test'
 
 _SAVED_WEIGHTS_NUM_CLASSES = 7 #ISIC2018
 
+
+#new_model = None
+#conv_model = None
+
 _MODELS_DIR = "models"
 
 _NEW_MODEL_NAME_PREFIX = "new"
 _CONV_MODEL_NAME_PREFIX = "con"
 
-_TEST_PRED_FILE_NAME = "test_pred.pckl"
-_VALID_PRED_FILE_NAME = "valid_pred.pckl"
+_TEST_PRED_FILE_NAME = "_test_pred.pckl"
+_VALID_PRED_FILE_NAME = "_valid_pred.pckl"
 
 num_fc_neurons = 4096
 #dropout = 0.5
 
 
 def add_new_last_layer(base_model, nb_classes):
+  """Add last layer to the convnet
+  Args:
+    base_model: keras model excluding top
+    nb_classes: # of classes
+  Returns:
+    new keras model with last layer
+  """
   x = base_model.output
   x = GlobalAveragePooling2D()(x)
   x = Dense(num_fc_neurons, activation='relu')(x)
@@ -90,6 +101,48 @@ def add_new_last_layer(base_model, nb_classes):
   model = Model(inputs=base_model.input, outputs=predictions)
 
   return model
+
+
+'''
+def customize_model(model):
+    global new_model
+    global conv_model
+
+    if model_name == "VGG16":
+        transfer_layer = model.get_layer('block5_pool')
+    elif model_name == "Xception":
+        transfer_layer = model.get_layer('block14_sepconv2_act')
+    elif model_name == "InceptionV3":
+        transfer_layer = model.get_layer('mixed10')
+    elif model_name == "DenseNet121" or model_name == "DenseNet201" or model_name == "DenseNet169":
+        transfer_layer = model.get_layer('bn')
+    elif model_name == "InceptionResNetV2":
+        transfer_layer = model.get_layer('conv_7b_ac')
+    elif model_name == "NASNetLarge":
+        transfer_layer = model.get_layer('activation_520')
+       
+    #x = base_model.output
+    #x = GlobalAveragePooling2D()(x)
+    #x = Dense(FC_SIZE, activation='relu')(x) #new FC layer, random init
+    #predictions = Dense(nb_classes, activation='softmax')(x) #new softmax layer
+    #model = Model(input=base_model.input, output=predictions)
+    #return model
+
+    conv_model = Model(inputs=model.input,
+                       outputs=model.output)#transfer_layer.output)
+    new_model = Sequential()
+    new_model.add(conv_model)
+    new_model.add(GlobalAveragePooling2D())
+    if num_fc_layers >= 1:
+        new_model.add(Dense(num_fc_neurons, activation='relu'))
+    if num_fc_layers >= 2:
+        new_model.add(Dropout(dropout))
+        new_model.add(Dense(num_fc_neurons, activation='relu'))
+    if num_fc_layers >= 3:
+        new_model.add(Dropout(dropout))
+        new_model.add(Dense(num_fc_neurons, activation='relu'))
+    new_model.add(Dense(num_classes, activation='softmax'))
+'''
 
 
 def replace_top_layer(model, new_num_classes):
@@ -126,26 +179,46 @@ def create_model():
     modelClass = globals()[model_name]
     print("ModelClass: " + str(modelClass))
 
-    if weights is not "":
-        if weights == _IMAGE_NET_PRETRAINED_VALUE:
-            model = modelClass(
-                input_shape=(img_width, img_height, 3),
-                include_top=False,
-                weights='imagenet')
-        else:
-            model = modelClass(
-                input_shape=(img_width, img_height, 3),
-                include_top=False,
-                weights=None)
+    if weights == _IMAGE_NET_PRETRAINED_VALUE:
+        model = modelClass(
+            input_shape=(img_width, img_height, 3),
+            include_top=False,
+            weights='imagenet')
+
+        model = add_new_last_layer(model, num_classes)
+    else:
+        model = load_model(weights)
+        #model = modelClass(
+        #    input_shape=(img_width, img_height, 3),
+        #    include_top=False,
+        #    weights=None)
+
     print("Model instance: " + str(model))
 
-    model = add_new_last_layer(model, num_classes)
+    #model = add_new_last_layer(model, num_classes)
     #replace_top_layer(model, num_classes)
-    load_weight_file(model, weights)
+    #load_weight_file(model, weights)
     print(model.summary())
     print(model.layers[-1].output_shape)
 
     return model
+
+    '''
+    customize_model(model)
+    print(new_model.summary())
+    print(new_model.layers[-1].output_shape)
+
+    load_weight_file(weights)
+    print(new_model.summary())
+
+    new_model_path = os.path.join(_MODELS_DIR, _NEW_MODEL_NAME_PREFIX + "_" + model_file_suffix + ".h5")
+    conv_model_path = os.path.join(_MODELS_DIR, _CONV_MODEL_NAME_PREFIX + "_" + model_file_suffix + ".h5")
+
+    if not (os.path.isfile(new_model_path)):
+        new_model.save(new_model_path)
+    if not (os.path.isfile(conv_model_path)):
+        conv_model.save(conv_model_path)
+    '''
 
 
 def load_split_images(split_name):
@@ -252,6 +325,7 @@ def get_preprocessor():
         def preprocess(img):
             img = cc.stretch(img)
 
+            #img = img.astype('float32')
             return img
         return preprocess
     elif img_preprocess == "retinex":
@@ -280,10 +354,23 @@ def get_preprocessor():
 def train_model(data, model, save_weights_path):
     X_train, y_train, X_valid, y_valid, X_test, y_test = data
 
-    # was val_loss
-    checkpointer = keras.callbacks.ModelCheckpoint(filepath=save_weights_path, monitor='val_categorical_accuracy', verbose=1, save_best_only=True)
-    # was val_loss
-    earlyStopping = keras.callbacks.EarlyStopping(monitor='val_categorical_accuracy', patience=patience, verbose=1, mode='auto') 
+    # was val_loss val_categorical_accuracy
+    # TODO csaka  sulyokat mentem most a NASNetLarge miatt !!!!
+    #checkpointer = keras.callbacks.ModelCheckpoint(filepath=save_weights_path, monitor='val_loss', verbose=1, save_best_only=True, save_weights_only=True)
+    checkpointer = keras.callbacks.ModelCheckpoint(filepath=save_weights_path, monitor='val_loss', verbose=1, save_best_only=True, save_weights_only=False)
+    # was val_loss val_categorical_accuracy
+    earlyStopping = keras.callbacks.EarlyStopping(monitor='val_loss', patience=patience, verbose=1, mode='auto') 
+
+    '''
+    def train_prep(img):
+        return preprocess_image(np.asarray(img))
+
+    def valid_prep(img):
+        return preprocess_image(np.asarray(img))
+
+    def test_prep(img):
+        return preprocess_image(np.asarray(img))
+    '''
 
     train_prep = get_preprocessor()
     valid_prep = get_preprocessor()
@@ -301,18 +388,20 @@ def train_model(data, model, save_weights_path):
     class_weight = None
     if weighted_classes:
         class_weight = 'auto'
-
     history = model.fit_generator(train_datagen.flow(X_train, y_train, batch_size=batch_size),
                                       epochs=max_epochs,
                                       verbose=1,
                                       callbacks=[earlyStopping, checkpointer],
                                       validation_data=valid_datagen.flow(X_valid, y_valid, batch_size=batch_size),
                                       class_weight=class_weight)
-
+    #model.save(save_weights_path) #-- the checkpointer saves the best model, don't want to overwrite
+    # load the best model
     model = load_model(save_weights_path)
+    #model = load_model("models/ci_micro_4_4/ci_micro_4_4.model")
+    #model.load_weights(save_weights_path)
 
     if len(X_test) > 0:
-        score = model.evaluate(X_test, y_test, verbose=1)
+        score = model.evaluate_generator(test_datagen.flow(X_test, y_test, shuffle=False))
         print('Test loss:', score[0])
         print('Test accuracy:', score[1])
     else:
@@ -341,6 +430,7 @@ def do_transfer_learning(model, num_frozen_layers, optimizer):
 
         print('{0}:\t{1}'.format(layer.trainable, layer.name))
 
+    #new_
     model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
 
     X_train, y_train, X_valid, y_valid, X_test, y_test = load_images()
@@ -349,8 +439,11 @@ def do_transfer_learning(model, num_frozen_layers, optimizer):
     history = train_model(data=(X_train, y_train, X_valid, y_valid, X_test, y_test), model=model, #new_model=new_model,
                           save_weights_path=save_weights_path)
 
+    #new_
     model.load_weights(save_weights_path)
 
+    #test_model(X_valid, new_model, _VALID_PRED_FILE_NAME)
+    #test_model(X_test, new_model, _TEST_PRED_FILE_NAME)
     test_model(X_valid, model, _VALID_PRED_FILE_NAME)
     test_model(X_test, model, _TEST_PRED_FILE_NAME)
 
@@ -364,7 +457,7 @@ def learn(model):
 
 
 def run():
-    os.makedirs(target_dir)
+    #os.makedirs(target_dir)
 
     model = create_model()
     learn(model)
@@ -437,6 +530,14 @@ if __name__ == '__main__':
         type=int,
         default=100,
         help="Maximum number of epochs.")
+    parser.add_argument(
+        "--loss",
+        type=str,
+        default="categorical_crossentropy",
+        help="Loss function.")
+    parser.add_argument(
+        "id", type=str,
+        help="Unique identifier.")
 
 
     flags, unparsed = parser.parse_known_args()
@@ -452,8 +553,16 @@ if __name__ == '__main__':
     img_preprocess = flags.preprocess
     dropout = flags.dropout
     max_epochs = flags.max_epochs
+    loss = flags.loss
+
+    id = flags.id
 
     print("--------------------------------------------------")
+    print("ID: " + str(id))
+
+    _TEST_PRED_FILE_NAME = id + _TEST_PRED_FILE_NAME
+    _VALID_PRED_FILE_NAME = id + _VALID_PRED_FILE_NAME
+
     arg_values = ""
     model_file_suffix = ""
     for arg in vars(flags):
@@ -468,7 +577,7 @@ if __name__ == '__main__':
                 model_file_suffix += arg + "=" + str(getattr(flags, arg))
         print(arg + "='" + str(getattr(flags, arg)) + "'")
     print("--------------------------------------------------")
-    train_result_dir_name = time.strftime("%Y%m%d%H%M%S", time.gmtime()) + "," + arg_values
+    train_result_dir_name = id # time.strftime("%Y%m%d%H%M%S", time.gmtime()) + "," + arg_values
     target_dir = os.path.join(_MODELS_DIR, train_result_dir_name)
     print("target_dir --> " + target_dir)
     print("--------------------------------------------------")
@@ -497,7 +606,6 @@ if __name__ == '__main__':
 
     print("num_fc_layers: " + str(num_fc_layers))
  
-    loss = 'categorical_crossentropy'
     metrics = ['categorical_accuracy']
 
     run()
